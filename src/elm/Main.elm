@@ -2,6 +2,7 @@ import Html
 import Html exposing (Html, text, div, input, label, section, h1, p, a, header, h2, h3)
 import Html.Attributes as A exposing (href, id, for, class, placeholder, autofocus, classList, src, name, type_, title, checked, value, disabled, min, max)
 import Html.Events as E exposing (onCheck, onInput)
+import String
 
 
 main : Program Never Model Msg
@@ -20,7 +21,7 @@ type alias Location =
 type alias CurrentSearch =
   { name: String
   , location: Maybe Location
-  , radius: Maybe Float
+  , radius: Float
   }
 
 type alias SearchResult =
@@ -40,7 +41,7 @@ model =
   { currentSearch =
     { name = ""
     , location = Nothing
-    , radius = Nothing
+    , radius = 0.0
     }
   , searchResults = []
   }
@@ -53,6 +54,10 @@ updateLocation : Maybe Location -> CurrentSearch -> CurrentSearch
 updateLocation location model =
   { model | location = location }
 
+updateRadius : Float -> CurrentSearch -> CurrentSearch
+updateRadius radius model =
+  { model | radius = radius }
+
 update : Msg -> Model -> Model
 update message model =
   case message of
@@ -62,16 +67,28 @@ update message model =
       let search = if checked then Nothing else Nothing
       in
         { model | currentSearch = updateLocation search model.currentSearch }
-    _ ->
-      model
+    SetLocation latitude longitude ->
+      let location = Just <| Location latitude longitude
+      in
+        { model | currentSearch = updateLocation location model.currentSearch }
+    SetRadius radius ->
+        { model | currentSearch = updateRadius radius model.currentSearch }
 
 
 type Msg
   = SetText String
   | ToggleLocalization Bool
   | SetLocation Float Float
-  | SetRadius String
+  | SetRadius Float
 
+
+onRadius : String -> Msg
+onRadius input =
+  case (String.toFloat input) of
+    Ok radius ->
+      SetRadius radius
+    Err error ->
+      SetRadius 0.0
 
 view : Model -> Html Msg
 view model =
@@ -97,7 +114,7 @@ view model =
           , input [ A.type_ "checkbox", A.disabled False, E.onCheck ToggleLocalization ] []
           ]
         , div [ class "input-group" ]
-          [ input [ A.type_ "range", A.min "1", A.max "100", A.value "50", A.disabled False, E.onInput SetRadius ] []
+          [ input [ A.type_ "range", A.min "1", A.max "100", A.value "50", A.disabled False, E.onInput onRadius ] []
           ]
         ]
       ]
