@@ -8,6 +8,9 @@ import Task
 import Tuple
 import String.Interpolate as StringInt
 import Http
+import Json.Decode exposing (string, int, list, Decoder)
+import Json.Decode.Pipeline exposing (decode, required, requiredAt, optional)
+
 
 main : Program Never Model Msg
 main =
@@ -35,9 +38,11 @@ type alias SearchResult =
   , thumbnailUrl: String
   }
 
+type alias SearchResults = List SearchResult
+
 type alias Model =
   { currentSearch : CurrentSearch
-  , searchResults: List SearchResult
+  , searchResults: SearchResults
   , query: String
   , error: Maybe String
   , rawResponse: Maybe String
@@ -101,10 +106,28 @@ buildQueryString search =
     (youtube_api_url ++ "?") ++ (List.foldl (++) "" params)
 
 
+buildVideo : Decoder SearchResult
+buildVideo =
+  decode SearchResult
+    |> requiredAt ["id", "videoId"] string
+    |> requiredAt ["snippet", "title"] string
+    |> requiredAt ["snippet", "thumbnails", "high", "url"] string
+
+type alias LOF =
+  { items: List SearchResult }
+
+aliasToList obj =
+  obj
+
+decodeVideos : Decoder (List SearchResult)
+decodeVideos =
+  decode aliasToList
+    |> required "items" (list buildVideo)
+
 searchVideo : CurrentSearch -> Cmd Msg
 searchVideo search =
   let
-    request = Http.getString (buildQueryString search)
+    request = Http.get (buildQueryString search) decodeVideos
   in
     Http.send LoadVideos request
 
@@ -164,16 +187,22 @@ update message model =
         , command
         )
     LoadVideos (Ok response) ->
-      ({ model | rawResponse = Just response }, Cmd.none)
+      (
+        { model
+        | rawResponse = Just (toString response)
+        , searchResults = response}
+      , Cmd.none
+      )
     LoadVideos (Err errString) ->
       ({ model | error = Just (toString errString) }, Cmd.none)
+
 
 type Msg
   = SetText String
   | ToggleLocalization Bool
   | SetLocation Float Float
   | SetRadius Float
-  | LoadVideos (Result Http.Error String)
+  | LoadVideos (Result Http.Error SearchResults)
 
 
 onRadius : String -> Msg
@@ -183,6 +212,7 @@ onRadius input =
       SetRadius radius
     Err error ->
       SetRadius 0.0
+
 
 view : Model -> Html Msg
 view model =
