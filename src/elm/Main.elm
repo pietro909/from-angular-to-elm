@@ -3,14 +3,19 @@ import Html exposing (Html, text, div, input, label, section, h1, p, a, header, 
 import Html.Attributes as A exposing (href, id, for, class, placeholder, autofocus, classList, src, name, type_, title, checked, value, disabled, min, max)
 import Html.Events as E exposing (onCheck, onInput)
 import String
-
+import Geolocation
+import Task
+import Tuple
+import String.Interpolate as StringInt
+import Http
 
 main : Program Never Model Msg
 main =
-  Html.beginnerProgram
-    { model = model
+  Html.program
+    { init = (initialModel, Cmd.none)
     , view = view
     , update = update
+    , subscriptions = (\_ -> Sub.none)
     }
 
 type alias Location =
@@ -33,17 +38,23 @@ type alias SearchResult =
 type alias Model =
   { currentSearch : CurrentSearch
   , searchResults: List SearchResult
+  , query: String
+  , error: Maybe String
+  , rawResponse: Maybe String
   }
 
 
-model : Model
-model =
+initialModel : Model
+initialModel =
   { currentSearch =
     { name = ""
     , location = Nothing
     , radius = 0.0
     }
   , searchResults = []
+  , query = ""
+  , error = Nothing
+  , rawResponse = Nothing
   }
 
 updateName : String -> CurrentSearch -> CurrentSearch
@@ -58,28 +69,111 @@ updateRadius : Float -> CurrentSearch -> CurrentSearch
 updateRadius radius model =
   { model | radius = radius }
 
-update : Msg -> Model -> Model
+
+-- YOUTUBE STUFF
+
+youtube_api_key = "AIzaSyDOfT_BO81aEZScosfTYMruJobmpjqNeEk"
+youtube_api_url = "https://www.googleapis.com/youtube/v3/search"
+location_template = "&location={0},{1}&locationradius={2}km"
+
+buildQueryString : CurrentSearch -> String
+buildQueryString search =
+  let
+    locationString = 
+      case search.location of
+        Just location ->
+          let 
+            radius = if (search.radius == 0.0) then 50 else search.radius
+            params = List.map toString [ location.latitude, location.longitude, radius ]
+          in
+            StringInt.interpolate location_template params
+        Nothing ->
+          ""
+    params =
+      [ locationString
+      , "&q=" ++ search.name
+      , "&key=" ++ youtube_api_key
+      , "&part=snippet"
+      , "&type=video"
+      , "maxResults=50"
+      ]
+  in
+    (youtube_api_url ++ "?") ++ (List.foldl (++) "" params)
+
+
+searchVideo : CurrentSearch -> Cmd Msg
+searchVideo search =
+  let
+    request = Http.getString (buildQueryString search)
+  in
+    Http.send LoadVideos request
+
+update : Msg -> Model -> (Model, Cmd Msg)
 update message model =
   case message of
     SetText text ->
-      { model | currentSearch = updateName text model.currentSearch }
+      let
+        command = searchVideo model.currentSearch
+      in
+        (
+          { model
+          | currentSearch = updateName text model.currentSearch
+          }
+        , command
+        )
     ToggleLocalization checked ->
-      let search = if checked then Nothing else Nothing
-      in
-        { model | currentSearch = updateLocation search model.currentSearch }
+      if checked then
+        let
+          resultHandler result =
+            case result of
+              Ok location -> 
+                SetLocation location.latitude location.longitude
+              Err error -> 
+                ToggleLocalization False
+          command = Task.attempt resultHandler Geolocation.now
+        in (model, command)
+      else
+        let
+          command = searchVideo model.currentSearch
+        in
+          (
+            { model
+            | currentSearch = updateLocation Nothing model.currentSearch
+            }
+          , command
+          )  
     SetLocation latitude longitude ->
-      let location = Just <| Location latitude longitude
+      let
+        location = Just <| Location latitude longitude
+        command = searchVideo model.currentSearch
       in
-        { model | currentSearch = updateLocation location model.currentSearch }
+        (
+          { model
+          | currentSearch = updateLocation location model.currentSearch
+          }
+        , command
+        )
     SetRadius radius ->
-        { model | currentSearch = updateRadius radius model.currentSearch }
-
+      let
+        command = searchVideo model.currentSearch
+      in
+        (
+          { model
+          | currentSearch = updateRadius radius model.currentSearch 
+          }
+        , command
+        )
+    LoadVideos (Ok response) ->
+      ({ model | rawResponse = Just response }, Cmd.none)
+    LoadVideos (Err errString) ->
+      ({ model | error = Just (toString errString) }, Cmd.none)
 
 type Msg
   = SetText String
   | ToggleLocalization Bool
   | SetLocation Float Float
   | SetRadius Float
+  | LoadVideos (Result Http.Error String)
 
 
 onRadius : String -> Msg
@@ -99,14 +193,7 @@ view model =
       ]
     , section [ A.class "row" ]
       [ div [ A.class "col-xs-12 col-sm-10 col-md-8 col-lg-6" ]
-        [ h2 [] [ text "Elm with Gulp and SASS configured" ]
-        , h3 [] [ text ( "Version " ) ]
-        , p []
-          [ text "Have a look at the "
-          , a [ A.href "https://github.com/pietro909/elm-quickstart/blob/master/README.md" ] [ text "readme" ]
-          , text " for more information."
-          ]
-        ]
+        [ h2 [] [ text "to elm" ] ]
       , div [ class "col-xs-12 col-sm-10 col-md-8 col-lg-6" ]
         [ input [ A.type_ "text", A.class "form-control", A.placeholder "Search", A.autofocus True, E.onInput SetText ] []
         , div [ A.class "input-group" ]
