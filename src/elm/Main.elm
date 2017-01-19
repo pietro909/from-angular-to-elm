@@ -1,5 +1,5 @@
 import Html
-import Html exposing (Html, text, div, input, label, section, h1, p, a, header, h2, h3)
+import Html exposing (Html, text, div, input, label, section, h1, p, a, header, h2, h3, img)
 import Html.Attributes as A exposing (href, id, for, class, placeholder, autofocus, classList, src, name, type_, title, checked, value, disabled, min, max)
 import Html.Events as E exposing (onCheck, onInput)
 import String
@@ -8,8 +8,13 @@ import Task
 import Tuple
 import String.Interpolate as StringInt
 import Http
+import Json.Encode
 import Json.Decode exposing (string, int, list, Decoder)
 import Json.Decode.Pipeline exposing (decode, required, requiredAt, optional)
+
+import Components.ProximitySelector as ProximitySelector
+
+minNameLength = 3
 
 
 main : Program Never Model Msg
@@ -43,23 +48,19 @@ type alias SearchResults = List SearchResult
 type alias Model =
   { currentSearch : CurrentSearch
   , searchResults: SearchResults
+  , enableLocalization: Bool
   , query: String
-  , error: Maybe String
-  , rawResponse: Maybe String
+  , errors: List Error
   }
 
 
 initialModel : Model
 initialModel =
-  { currentSearch =
-    { name = ""
-    , location = Nothing
-    , radius = 0.0
-    }
+  { currentSearch = CurrentSearch "" Nothing 0.0
   , searchResults = []
+  , enableLocalization = True
   , query = ""
-  , error = Nothing
-  , rawResponse = Nothing
+  , errors = [ EmptySearchBox ]
   }
 
 updateName : String -> CurrentSearch -> CurrentSearch
@@ -79,15 +80,18 @@ updateRadius radius model =
 
 youtube_api_key = "AIzaSyDOfT_BO81aEZScosfTYMruJobmpjqNeEk"
 youtube_api_url = "https://www.googleapis.com/youtube/v3/search"
-location_template = "&location={0},{1}&locationradius={2}km"
+location_template = "&location={0},{1}&locationRadius={2}km"
+
+isValidSearch : CurrentSearch -> Bool
+isValidSearch search = (String.length search.name) > 3
 
 buildQueryString : CurrentSearch -> String
 buildQueryString search =
   let
-    locationString = 
+    locationString =
       case search.location of
         Just location ->
-          let 
+          let
             radius = if (search.radius == 0.0) then 50 else search.radius
             params = List.map toString [ location.latitude, location.longitude, radius ]
           in
@@ -126,83 +130,141 @@ decodeVideos =
 
 searchVideo : CurrentSearch -> Cmd Msg
 searchVideo search =
-  let
-    request = Http.get (buildQueryString search) decodeVideos
-  in
-    Http.send LoadVideos request
+  if (isValidSearch search) then
+    Http.get (buildQueryString search) decodeVideos
+    |> Http.send LoadVideos
+  else
+    Cmd.none
+
+
+setEmptySearchError : String -> List Error -> List Error
+setEmptySearchError name errors =
+  if ((String.length name) > 3) then
+    removeError EmptySearchBox errors
+  else
+    updateErrors EmptySearchBox errors
+
+setLocationError : Maybe String -> List Error -> List Error
+setLocationError maybeError errors =
+  case maybeError of
+    Just errorMsg ->
+      updateErrors (LocationUnavailable errorMsg) errors
+    Nothing ->
+      removeError (LocationUnavailable "") errors
 
 update : Msg -> Model -> (Model, Cmd Msg)
 update message model =
   case message of
     SetText text ->
       let
-        command = searchVideo model.currentSearch
+        nextSearch = updateName text model.currentSearch
+        command = searchVideo nextSearch
+        errors = setEmptySearchError nextSearch.name model.errors
       in
-        (
-          { model
-          | currentSearch = updateName text model.currentSearch
-          }
-        , command
-        )
-    ToggleLocalization checked ->
-      if checked then
-        let
-          resultHandler result =
-            case result of
-              Ok location -> 
-                SetLocation location.latitude location.longitude
-              Err error -> 
-                ToggleLocalization False
-          command = Task.attempt resultHandler Geolocation.now
-        in (model, command)
-      else
-        let
-          command = searchVideo model.currentSearch
-        in
-          (
-            { model
-            | currentSearch = updateLocation Nothing model.currentSearch
-            }
-          , command
-          )  
+        ({ model | currentSearch = nextSearch, errors = errors }, command)
+    DisableLocalization reason ->
+      (
+        { model | errors = setLocationError (Just reason) model.errors }
+        , Cmd.none
+      )
+    ToggleLocalization True ->
+      let
+        resultHandler result =
+          case result of
+            Ok location ->
+              SetLocation location.latitude location.longitude
+            Err error ->
+              DisableLocalization (toString error)
+        command = Task.attempt resultHandler Geolocation.now
+      in (model, command)
+    ToggleLocalization False ->
+      let
+        nextSearch = updateLocation Nothing model.currentSearch
+        command = searchVideo nextSearch
+      in
+        ({ model | currentSearch = nextSearch }, command)
     SetLocation latitude longitude ->
       let
         location = Just <| Location latitude longitude
-        command = searchVideo model.currentSearch
+        nextSearch = updateLocation location model.currentSearch
+        command = searchVideo nextSearch
+        errors = setLocationError Nothing model.errors
       in
-        (
-          { model
-          | currentSearch = updateLocation location model.currentSearch
-          }
-        , command
-        )
+        ({ model | errors = errors, currentSearch = nextSearch }, command)
     SetRadius radius ->
       let
+        nextSearch = updateRadius radius model.currentSearch
         command = searchVideo model.currentSearch
       in
-        (
-          { model
-          | currentSearch = updateRadius radius model.currentSearch 
-          }
-        , command
-        )
+        ({ model | currentSearch = nextSearch }, command)
     LoadVideos (Ok response) ->
       (
         { model
-        | rawResponse = Just (toString response)
-        , searchResults = response}
+        | errors = removeError (SearchError "") model.errors
+        , searchResults = response
+        }
       , Cmd.none
       )
     LoadVideos (Err errString) ->
-      ({ model | error = Just (toString errString) }, Cmd.none)
+      let errors = updateErrors (SearchError (toString errString)) model.errors
+      in ({ model | errors = errors }, Cmd.none)
 
 
 type Msg
   = SetText String
+  | DisableLocalization String
   | ToggleLocalization Bool
   | SetLocation Float Float
   | SetRadius Float
   | LoadVideos (Result Http.Error SearchResults)
+
+type Error
+  = EmptySearchBox
+  | LocationUnavailable String
+  | SearchError String
+
+
+isSearchError error =
+  case error of
+    SearchError _ -> True
+    _ -> False
+
+isEmptySearchBox error =
+  case error of
+    EmptySearchBox -> True
+    _ -> False
+
+isLocationUnavailable error =
+  case error of
+    LocationUnavailable _ -> True
+    _ -> False
+
+removeError : Error -> List Error -> List Error
+removeError error errors =
+  case error of
+    EmptySearchBox ->
+      List.filter (\e -> not (isEmptySearchBox e)) errors
+    LocationUnavailable _ ->
+      List.filter (\e -> not (isLocationUnavailable e)) errors
+    SearchError _ ->
+      List.filter (\e -> not (isSearchError e)) errors
+
+updateErrors : Error -> List Error -> List Error
+updateErrors error errors =
+  error :: (removeError error errors)
+
+viewError : Error -> Html Msg
+viewError error =
+  case error of
+    EmptySearchBox ->
+      div [ class "row col-md-8 alert alert-danger" ]
+        [ p [] [ text "Can't search with an empty searchbox" ] ]
+    SearchError details ->
+      div [ class "row col-md-8 alert alert-danger" ]
+        [ p [] [ text details ]]
+    LocationUnavailable details ->
+      div [ class "row col-md-8 alert alert-warning" ]
+        [ p [] [ text details ]]
 
 
 onRadius : String -> Msg
@@ -213,26 +275,56 @@ onRadius input =
     Err error ->
       SetRadius 0.0
 
+isLocationActive : CurrentSearch -> Bool
+isLocationActive search =
+  case search.location of
+    Just _ -> True
+    Nothing -> False
 
 view : Model -> Html Msg
 view model =
-  div [ class "container" ]
-    [ header [ A.class "row" ]
-      [ div [ A.class "col-xs-12 col-sm-12 col-md-12 menu" ]
-        [ h1 [] [ text "Elm Quickstart" ] ]
+  section [ class "col-md-8" ]
+    [ h1 [] [ text "Stuff" ]
+    , div [ class "row col-md-8" ]
+      [ viewSearchBox model
+      , viewProximitySelector model.enableLocalization (isLocationActive model.currentSearch)
       ]
-    , section [ A.class "row" ]
-      [ div [ A.class "col-xs-12 col-sm-10 col-md-8 col-lg-6" ]
-        [ h2 [] [ text "to elm" ] ]
-      , div [ class "col-xs-12 col-sm-10 col-md-8 col-lg-6" ]
-        [ input [ A.type_ "text", A.class "form-control", A.placeholder "Search", A.autofocus True, E.onInput SetText ] []
-        , div [ A.class "input-group" ]
-          [ label [ A.for "userLocation" ] [ text "Use current location" ]
-          , input [ A.type_ "checkbox", A.disabled False, E.onCheck ToggleLocalization ] []
-          ]
-        , div [ class "input-group" ]
-          [ input [ A.type_ "range", A.min "1", A.max "100", A.value "50", A.disabled False, E.onInput onRadius ] []
-          ]
-        ]
+    , div [ class "row col-md-8" ]
+      (List.map viewError model.errors)
+    , div [ class "row col-md-8" ]
+      [ p []
+        [ text """
+          Try to type something in the searchbox, play with the location and
+          with radius: the above state always be consistent and up to date.
+        """]
+      , p [ class "state" ] [ text (toString model.currentSearch) ]
+      , h2 [] [ text "Search results:" ]
       ]
+    , div [ class "row col-md-8" ]
+      (List.map viewThumbnail model.searchResults)
+    ]
+
+viewSearchBox : Model -> Html Msg
+viewSearchBox model =
+  div [ class "search-box" ]
+    [ input
+      [ A.type_ "text"
+      , A.class "form-control"
+      , A.placeholder "Search"
+      , A.autofocus True
+      , E.onInput SetText
+      ] []
+    ]
+
+viewProximitySelector : Bool -> Bool -> Html Msg
+viewProximitySelector =
+  ProximitySelector.view ToggleLocalization onRadius
+
+
+viewThumbnail : SearchResult -> Html Msg
+viewThumbnail result =
+  div [ class "thumbnail col-sm-6 col-md-4" ]
+    [ div [ class "caption" ]
+      [ h3 [] [ text result.title ] ]
+    , img [ src result.thumbnailUrl ] []
     ]
