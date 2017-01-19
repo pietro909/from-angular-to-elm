@@ -83,7 +83,7 @@ youtube_api_url = "https://www.googleapis.com/youtube/v3/search"
 location_template = "&location={0},{1}&locationRadius={2}km"
 
 isValidSearch : CurrentSearch -> Bool
-isValidSearch search = (String.length search.name) > 3
+isValidSearch search = (String.length search.name) > minNameLength
 
 buildQueryString : CurrentSearch -> String
 buildQueryString search =
@@ -136,7 +136,6 @@ searchVideo search =
   else
     Cmd.none
 
-
 setEmptySearchError : String -> List Error -> List Error
 setEmptySearchError name errors =
   if ((String.length name) > 3) then
@@ -176,13 +175,13 @@ update message model =
             Err error ->
               DisableLocalization (toString error)
         command = Task.attempt resultHandler Geolocation.now
-      in (model, command)
+      in ({ model | enableLocalization = True }, command )
     ToggleLocalization False ->
       let
         nextSearch = updateLocation Nothing model.currentSearch
         command = searchVideo nextSearch
       in
-        ({ model | currentSearch = nextSearch }, command)
+        ({ model | currentSearch = nextSearch, enableLocalization = False }, command)
     SetLocation latitude longitude ->
       let
         location = Just <| Location latitude longitude
@@ -287,7 +286,10 @@ view model =
     [ h1 [] [ text "Stuff" ]
     , div [ class "row col-md-8" ]
       [ viewSearchBox model
-      , viewProximitySelector model.enableLocalization (isLocationActive model.currentSearch)
+      , viewProximitySelector
+        (model.enableLocalization && (isValidSearch model.currentSearch))
+        (isLocationActive model.currentSearch)
+        model.currentSearch.radius
       ]
     , div [ class "row col-md-8" ]
       (List.map viewError model.errors)
@@ -316,7 +318,7 @@ viewSearchBox model =
       ] []
     ]
 
-viewProximitySelector : Bool -> Bool -> Html Msg
+viewProximitySelector : Bool -> Bool -> Float -> Html Msg
 viewProximitySelector =
   ProximitySelector.view ToggleLocalization onRadius
 
