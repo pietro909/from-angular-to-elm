@@ -11,6 +11,8 @@ import Http
 import Json.Encode
 import Json.Decode exposing (string, int, list, Decoder)
 import Json.Decode.Pipeline exposing (decode, required, requiredAt, optional)
+import Maybe.Extra as ME
+import Result.Extra as RE
 
 import Components.ProximitySelector as ProximitySelector
 
@@ -117,8 +119,10 @@ buildVideo =
     |> requiredAt ["snippet", "title"] string
     |> requiredAt ["snippet", "thumbnails", "high", "url"] string
 
+{-- }
 type alias LOF =
   { items: List SearchResult }
+  --}
 
 aliasToList obj =
   obj
@@ -161,11 +165,11 @@ update message model =
         errors = setEmptySearchError nextSearch.name model.errors
       in
         ({ model | currentSearch = nextSearch, errors = errors }, command)
+
     DisableLocalization reason ->
-      (
-        { model | errors = setLocationError (Just reason) model.errors }
-        , Cmd.none
-      )
+      let errors = setLocationError (Just reason) model.errors 
+      in ({ model | errors = errors }, Cmd.none)
+
     ToggleLocalization True ->
       let
         resultHandler result =
@@ -176,12 +180,14 @@ update message model =
               DisableLocalization (toString error)
         command = Task.attempt resultHandler Geolocation.now
       in ({ model | enableLocalization = True }, command )
+
     ToggleLocalization False ->
       let
         nextSearch = updateLocation Nothing model.currentSearch
         command = searchVideo nextSearch
       in
         ({ model | currentSearch = nextSearch, enableLocalization = False }, command)
+
     SetLocation latitude longitude ->
       let
         location = Just <| Location latitude longitude
@@ -190,20 +196,18 @@ update message model =
         errors = setLocationError Nothing model.errors
       in
         ({ model | errors = errors, currentSearch = nextSearch }, command)
+
     SetRadius radius ->
       let
         nextSearch = updateRadius radius model.currentSearch
         command = searchVideo model.currentSearch
       in
         ({ model | currentSearch = nextSearch }, command)
+
     LoadVideos (Ok response) ->
-      (
-        { model
-        | errors = removeError (SearchError "") model.errors
-        , searchResults = response
-        }
-      , Cmd.none
-      )
+      let errors = removeError (SearchError "") model.errors
+      in ({ model | errors = errors, searchResults = response }, Cmd.none)
+
     LoadVideos (Err errString) ->
       let errors = updateErrors (SearchError (toString errString)) model.errors
       in ({ model | errors = errors }, Cmd.none)
@@ -267,30 +271,14 @@ viewError error =
 
 
 onRadius : String -> Msg
-onRadius input =
-  case (String.toFloat input) of
-    Ok radius ->
-      SetRadius radius
-    Err error ->
-      SetRadius 0.0
+onRadius input = SetRadius (RE.extract (\_ -> 0.0)  (String.toFloat input))
 
-isLocationActive : CurrentSearch -> Bool
-isLocationActive search =
-  case search.location of
-    Just _ -> True
-    Nothing -> False
 
 view : Model -> Html Msg
 view model =
   section [ class "col-md-8" ]
     [ h1 [] [ text "Stuff" ]
-    , div [ class "row col-md-8" ]
-      [ viewSearchBox model
-      , viewProximitySelector
-        (model.enableLocalization && (isValidSearch model.currentSearch))
-        (isLocationActive model.currentSearch)
-        model.currentSearch.radius
-      ]
+    , viewInput model
     , div [ class "row col-md-8" ]
       (List.map viewError model.errors)
     , div [ class "row col-md-8" ]
@@ -306,6 +294,20 @@ view model =
       (List.map viewThumbnail model.searchResults)
     ]
 
+viewInput : Model -> Html Msg
+viewInput model =
+  let
+    proxSelParams = 
+      ProximitySelector.Parameters 
+        (not (model.enableLocalization && (isValidSearch model.currentSearch)))
+        (ME.isJust model.currentSearch.location)
+        model.currentSearch.radius
+  in
+    div [ class "row col-md-8" ]
+      [ viewSearchBox model
+      , viewProximitySelector proxSelParams
+      ]
+
 viewSearchBox : Model -> Html Msg
 viewSearchBox model =
   div [ class "search-box" ]
@@ -318,7 +320,7 @@ viewSearchBox model =
       ] []
     ]
 
-viewProximitySelector : Bool -> Bool -> Float -> Html Msg
+viewProximitySelector : ProximitySelector.Parameters -> Html Msg
 viewProximitySelector =
   ProximitySelector.view ToggleLocalization onRadius
 
